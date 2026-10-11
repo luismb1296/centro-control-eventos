@@ -893,6 +893,7 @@ const NAV = [
   ['mensajes','Mensajes','M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z'],
   ['cotizaciones','Cotizaciones','M3 3h18v4H3zM3 11h8v10H3zM15 11h6M15 15h6M15 19h6'],
   ['dia','Día del evento','M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M5 19l1.5-1.5M17.5 6.5L19 5M12 7a5 5 0 100 10 5 5 0 000-10z'],
+  ['nube','Nube (compartir)','M18 10h-1.3A8 8 0 109 20h9a5 5 0 000-10z'],
   ['decisiones','Decisiones','M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11'],
 ];
 const $ = s=>document.querySelector(s);
@@ -2821,6 +2822,120 @@ VIEWS.confirmaciones=()=>{
   const qm=$('#rQuitarMan');if(qm)qm.onchange=()=>{rsvpQuitarMan=qm.checked;render()};
   const ap=$('#rAplicar');if(ap)ap.onclick=()=>{const p=rsvpPlan(),q=!!(manuales&&quitarChk);const partes=rsvpResumenPlan(p);if(q)partes.unshift(`se quitarán ${manuales} invitados que no vienen del Sheet (ejemplo o capturados a mano)`);confirmar('Actualizar lista de Invitados','Esto hará lo siguiente: '+partes.join('; ')+'. Puedes deshacerlo con Deshacer.','Aplicar',()=>rsvpAplicar(q))};
 };
+
+/* ==================================================================
+   v15: NUBE (compartir con tu pareja o equipo)
+   - Guarda/lee una copia completa de los datos en una hoja aparte, a través de tu mismo Apps Script y tu misma clave.
+   - Control de versiones: si otra persona guardó antes, no deja sobrescribir sin avisar.
+   - Se excluyen la vista (ui) y la imagen de fondo del plano, que son locales de cada navegador.
+   ================================================================== */
+function hashTxt(t){let h=5381;for(let i=0;i<t.length;i++)h=((h<<5)+h+t.charCodeAt(i))|0;return String(h)}
+function hashActual(){try{const o=JSON.parse(datosSnap());if(o.rsvp)o.rsvp.ultima='';return hashTxt(JSON.stringify(o))}catch(e){return ''}}
+const nubeEst={cargando:false,error:'',nube:null,conflicto:false,avisada:-1,revisada:false};
+async function nubeLlamar(accion,body){
+  const ctl=new AbortController(),to=setTimeout(()=>ctl.abort(),40000);
+  try{
+    let r;
+    if(body)r=await fetch(CONN.url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(body),signal:ctl.signal,redirect:'follow'});
+    else r=await fetch(CONN.url+(CONN.url.indexOf('?')>=0?'&':'?')+'accion='+accion+'&clave='+encodeURIComponent(CONN.clave),{signal:ctl.signal,redirect:'follow'});
+    const txt=await r.text();let j;
+    try{j=JSON.parse(txt)}catch(e){throw new Error('formato')}
+    if(j&&j.ok===undefined&&j.personas===null)throw new Error('viejo');
+    return j;
+  }finally{clearTimeout(to)}
+}
+function nubeMsgError(e){
+  const m=String(e&&e.message||'');
+  return m==='clave'?'La clave no coincide con la de tu Apps Script.'
+    :m==='viejo'||m==='formato'?'Tu Apps Script aún no tiene las funciones de la nube, o no publicaste una nueva versión. Pega el código nuevo y publica una nueva versión.'
+    :m==='datos'?'La copia de la nube no es válida.'
+    :e&&e.name==='AbortError'?'Google tardó demasiado en responder. Intenta de nuevo.'
+    :'No se pudo conectar (sin internet, o esta página no tiene permiso de hablar con Google).';
+}
+async function nubeRevisar(silencioso){
+  if(!CONN.url||!CONN.clave||nubeEst.cargando)return;
+  try{
+    const j=await nubeLlamar('estadoApp');
+    if(!j.ok)throw new Error(j.motivo==='clave'?'clave':'respuesta');
+    nubeEst.nube={version:j.version,por:j.por,fecha:j.fecha};nubeEst.error='';nubeEst.revisada=true;
+    if(silencioso&&j.version>(CONN.base||0)&&nubeEst.avisada!==j.version){nubeEst.avisada=j.version;toast(`Hay una versión más nueva en la nube${j.por?' (guardada por '+j.por+')':''}. Ve a "Nube" para cargarla.`)}
+  }catch(e){if(!silencioso)nubeEst.error=nubeMsgError(e)}
+  if(S.ui.tab==='nube')render();
+}
+async function nubeGuardar(forzar){
+  if(!CONN.por){toast('Escribe primero tu nombre');return}
+  nubeEst.cargando=true;nubeEst.error='';nubeEst.conflicto=false;render();
+  const datos=datosSnap(),h=hashActual();
+  try{
+    const j=await nubeLlamar('guardarApp',{accion:'guardarApp',clave:CONN.clave,base:CONN.base||0,por:CONN.por,datos,forzar:!!forzar});
+    if(j.ok){CONN.base=j.version;CONN.hash=h;guardarConn();nubeEst.nube={version:j.version,por:CONN.por,fecha:j.fecha};toast(`Guardado en la nube (versión ${j.version})`)}
+    else if(j.motivo==='conflicto'){nubeEst.nube={version:j.version,por:j.por,fecha:j.fecha};nubeEst.conflicto=true}
+    else throw new Error(j.motivo==='clave'?'clave':'respuesta');
+  }catch(e){nubeEst.error=nubeMsgError(e)}
+  nubeEst.cargando=false;if(S.ui.tab==='nube')render();
+}
+async function nubeCargar(){
+  nubeEst.cargando=true;nubeEst.error='';render();
+  let j=null,d=null;
+  try{
+    j=await nubeLlamar('leerApp');
+    if(!j.ok)throw new Error(j.motivo==='clave'?'clave':'respuesta');
+    if(j.datos){try{d=JSON.parse(j.datos)}catch(e){throw new Error('datos')}if(!d||!d.config||!d.gastos)throw new Error('datos')}
+    nubeEst.nube={version:j.version,por:j.por,fecha:j.fecha};
+  }catch(e){nubeEst.error=nubeMsgError(e)}
+  nubeEst.cargando=false;
+  if(!nubeEst.error&&!d)toast('Aún no hay copia en la nube');
+  if(S.ui.tab==='nube')render();
+  if(!d)return;
+  const sucio=hashActual()!==CONN.hash;
+  confirmar('Cargar de la nube',`Se reemplazarán los datos de este navegador por la copia de la nube (versión ${j.version}${j.por?', guardada por '+j.por:''}).${sucio?' Tienes cambios sin guardar que se perderán: puedes recuperarlos con Deshacer.':''}`,'Cargar',()=>{
+    d.ui=S.ui;d.fondo=S.fondo;S=migrar(d);S.ui.tab='nube';
+    CONN.base=j.version;CONN.hash=hashActual();guardarConn();save();render();toast(`Cargada la versión ${j.version} de la nube`);
+  });
+}
+function fechaNube(s){const d=new Date(s);return !s||isNaN(d)?'':d.toLocaleDateString('es-MX',{day:'2-digit',month:'short'})+', '+d.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit',hour12:false})}
+VIEWS.nube=()=>{
+  $('#pageTitle').textContent='Nube: compartir con tu pareja o equipo';
+  $('#pageMeta').textContent='Guarda una copia de todo en tu Google Drive (por medio de tu Apps Script) para que otra persona la cargue en su navegador. No es en tiempo real: se guarda y se carga con botones.';
+  const conect=!!(CONN.url&&CONN.clave);
+  if(!conect){
+    view.innerHTML=`<div class="card"><h3>Conecta tu Apps Script</h3><p class="help" style="margin-top:6px">Es el mismo enlace y la misma clave de tu tablero. Se guardan solo en este navegador.</p>
+      <div class="grid g2" style="margin-top:10px"><label class="medida" style="flex-direction:column;align-items:stretch">Enlace de tu Apps Script (termina en /exec)<input type="text" id="nUrl" style="width:100%" placeholder="https://script.google.com/macros/s/…/exec"></label>
+      <label class="medida" style="flex-direction:column;align-items:stretch">Clave del tablero<input type="password" id="nClave" style="width:100%" autocomplete="off"></label></div>
+      <div class="rotbtns"><button class="btn primary" id="nConn">Guardar conexión</button></div></div>`;
+    $('#nConn').onclick=()=>{
+      const u=$('#nUrl').value.trim(),c=$('#nClave').value.trim();
+      if(!/^https:\/\/script\.google\.com\/macros\/s\/[^\s]+\/exec$/.test(u)){toast('El enlace debe empezar con https://script.google.com/macros/s/ y terminar en /exec');return}
+      if(!c){toast('Escribe la clave');return}
+      CONN.url=u;CONN.clave=c;guardarConn();render();nubeRevisar(false);
+    };
+    return;
+  }
+  if(!nubeEst.revisada&&!nubeEst.cargando&&!nubeEst.error)setTimeout(()=>nubeRevisar(false),0);
+  const n=nubeEst.nube,base=CONN.base||0,sucio=hashActual()!==CONN.hash,nueva=!!n&&n.version>base,vacia=!!n&&n.version===0;
+  let estado,cls;
+  if(!n){estado=nubeEst.error?'No se pudo revisar la nube.':'Revisando la nube…';cls='mute'}
+  else if(vacia){estado='Aún no hay copia en la nube. Pulsa Guardar para crear la primera.';cls='warn'}
+  else if(nueva){estado=`Hay una versión más nueva (${n.version}) guardada por ${n.por||'alguien'} el ${fechaNube(n.fecha)}. Cárgala antes de guardar para no borrar su trabajo.`;cls='bad'}
+  else if(sucio){estado=`Tienes cambios sin guardar. La nube está en la versión ${n.version}.`;cls='warn'}
+  else{estado=`Todo al día (versión ${n.version}, guardada por ${n.por||'—'} el ${fechaNube(n.fecha)}).`;cls='ok'}
+  view.innerHTML=`<div class="card"><div class="toolbar" style="margin-bottom:6px"><span class="pill ${cls}">${cls==='ok'?'Al día':cls==='bad'?'Hay una versión nueva':cls==='warn'?'Pendiente':'…'}</span><span>${esc(estado)}</span></div>
+      ${nubeEst.error?`<p style="color:var(--coral);margin:8px 0"><b>${esc(nubeEst.error)}</b></p>`:''}
+      ${nubeEst.conflicto?`<div class="card" style="border-color:var(--coral);margin:10px 0"><b style="color:var(--coral)">No se guardó.</b> ${esc(n&&n.por||'Alguien')} guardó la versión ${n?n.version:''} después de tu última carga. Para no borrar su trabajo: descarga un respaldo tuyo y luego carga la nube.<div class="rotbtns"><button class="btn" id="nRespaldo">Descargar mi respaldo (.json)</button><button class="btn primary" id="nCargar2">Cargar la versión de la nube</button><button class="btn danger" id="nForzar">Guardar de todas formas (sobrescribe)</button></div></div>`:''}
+      <label class="medida" style="flex-direction:column;align-items:stretch;max-width:320px;margin-top:10px">Tu nombre (para que se sepa quién guardó)<input type="text" id="nPor" style="width:100%" value="${esc(CONN.por||'')}" placeholder="Luis"></label>
+      <div class="rotbtns" style="margin-top:12px"><button class="btn primary" id="nGuardar" ${nubeEst.cargando||nueva||(!sucio&&!vacia)?'disabled':''}>${nubeEst.cargando?'Trabajando…':'Guardar en la nube'}</button><button class="btn" id="nCargar" ${nubeEst.cargando||!n||vacia?'disabled':''}>Cargar de la nube</button><button class="btn ghost" id="nRevisar" ${nubeEst.cargando?'disabled':''}>Revisar ahora</button></div></div>
+    <div class="card" style="margin-top:14px"><h3>Cómo usarlo entre dos personas</h3>
+      <ol class="help" style="margin:8px 0 0 18px;line-height:1.7"><li>Quien edita pulsa <b>Guardar en la nube</b> al terminar.</li><li>La otra persona abre la app, entra aquí y pulsa <b>Cargar de la nube</b> antes de editar.</li><li>Avísense por WhatsApp quién va a editar, para no editar los dos a la vez. Si pasa, la app no deja guardar al segundo y le explica qué hacer.</li><li>Al abrir la app, si hay una versión más nueva, te lo avisa.</li></ol>
+      <p class="help" style="margin-top:10px">No se comparten la imagen de fondo del plano ni las preferencias de vista; cada navegador conserva las suyas. La copia de la nube incluye presupuesto, pagos, invitados y todo lo demás: protégela con una clave fuerte.</p></div>`;
+  $('#nPor').onchange=e=>{CONN.por=e.target.value.trim();guardarConn()};
+  $('#nGuardar').onclick=()=>{CONN.por=$('#nPor').value.trim();guardarConn();nubeGuardar(false)};
+  $('#nCargar').onclick=()=>nubeCargar();
+  $('#nRevisar').onclick=()=>{nubeEst.revisada=false;nubeEst.error='';nubeRevisar(false).then(()=>toast('Nube revisada'))};
+  const r=$('#nRespaldo');if(r)r.onclick=()=>$('#btnExport').click();
+  const c2=$('#nCargar2');if(c2)c2.onclick=()=>nubeCargar();
+  const f=$('#nForzar');if(f)f.onclick=()=>confirmar('Guardar de todas formas',`Esto reemplaza en la nube la versión de ${n&&n.por||'la otra persona'} por la tuya. Su trabajo posterior a tu última carga se perderá en la nube.`,'Sobrescribir',()=>{CONN.por=$('#nPor').value.trim()||CONN.por;nubeGuardar(true)});
+};
+setTimeout(()=>{if(CONN.url&&CONN.clave)nubeRevisar(true)},2500);
 
 VIEWS.mesas = ()=>{
   const r=resumen(); const c=S.config;
