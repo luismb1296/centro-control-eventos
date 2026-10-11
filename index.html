@@ -2365,7 +2365,7 @@ const MSG_BASE={
 const MSG_NOM={invitacion:'Invitación',recordatorio:'Recordatorio de RSVP',recordatorioWeb:'Recordatorio con enlace',datos:'Datos del evento',gracias:'Agradecimiento'};
 function msgTexto(i,plantilla){
   const c=S.config,txt=(S.ui.msgTxt&&S.ui.msgTxt[plantilla])||MSG_BASE[plantilla];
-  const v={sitio:(S.rsvp&&S.rsvp.sitio)||'(enlace del sitio)',nombre:i.saludo||(i.nombre||i.nombreInv||'').split(' ')[0]||i.nombre,evento:c.evento||'el evento',fecha:fechaLarga(c.fecha),lugar:c.ciudad||'(lugar por confirmar)',mesa:i.mesa?(i.mesa+(i.asiento?`, asiento ${i.asiento}`:'')):'(por asignar)',rsvpLimite:c.rsvpLimite?fmtDate(c.rsvpLimite):'(fecha por definir)',anfitriones:[c.pareja1,c.pareja2].filter(Boolean).join(' y ')||'Los anfitriones',hogar:i.hogar||''};
+  const v={sitio:(S.rsvp&&S.rsvp.sitio)||'(enlace del sitio)',nombre:i.saludo||(i.rsvpKey&&i.hogar)||(i.nombre||i.nombreInv||'').split(' ')[0]||i.nombre,evento:c.evento||'el evento',fecha:fechaLarga(c.fecha),lugar:c.ciudad||'(lugar por confirmar)',mesa:i.mesa?(i.mesa+(i.asiento?`, asiento ${i.asiento}`:'')):'(por asignar)',rsvpLimite:c.rsvpLimite?fmtDate(c.rsvpLimite):'(fecha por definir)',anfitriones:[c.pareja1,c.pareja2].filter(Boolean).join(' y ')||'Los anfitriones',hogar:i.hogar||''};
   return txt.replace(/\{(\w+)\}/g,(m,k)=>v[k]!==undefined?v[k]:m);
 }
 function waLink(i,txt){let d=String(i.telefono||'').replace(/\D/g,'');if(!d)return '';if(d.length===10)d=(S.config.lada||'52')+d;return `https://wa.me/${d}?text=${encodeURIComponent(txt)}`}
@@ -2686,42 +2686,55 @@ function rsvpStats(L){
   o.resp=o.invTot?Math.round((o.siInv+o.noInv)/o.invTot*100):0;
   return o;
 }
-/* Plan de lugares: compara lo confirmado en el Sheet con los invitados de la app que vienen de él (rsvpKey). Solo agrega o quita lugares SIN mesa. */
+/* Lista de Invitados: una fila por invitación pendiente o que no asiste, y una fila por persona que confirmó.
+   Compara el Sheet con los invitados de la app que vienen de él (rsvpKey). Solo agrega o quita filas SIN mesa; a quien ya tiene mesa no lo borra. */
+function rsvpObjetivo(x){return x.estado==='si'?{n:Math.max(1,x.asistiran),r:'Confirmado'}:x.estado==='no'?{n:1,r:'Declinado'}:{n:1,r:'Pendiente'}}
+function rsvpFechaRsvp(x,r){return r==='Pendiente'||!x.fecha?'':fechaLocalISO(x.fecha)}
 function rsvpPlan(){
-  const L=RS().lista,pl={agregar:[],quitar:[],excede:[],huerfanas:[]};
+  const L=RS().lista,pl={agregar:[],quitar:[],excede:[],cambiar:[],huerfanas:[]};
   const porKey={};S.invitados.forEach(i=>{if(i.rsvpKey)(porKey[i.rsvpKey]=porKey[i.rsvpKey]||[]).push(i)});
   const vistas=new Set();
   L.forEach(x=>{
     const key=normTxt(x.nombre);vistas.add(key);
-    if(x.estado==='pendiente')return;
-    const need=x.estado==='si'?x.asistiran:0,cur=porKey[key]||[];
-    if(cur.length<need){
-      const usados=new Set(cur.map(i=>i.rsvpSeq));let k=1;
-      for(let n=cur.length;n<need;n++){while(usados.has(k))k++;usados.add(k);pl.agregar.push({x,key,seq:k})}
-    }else if(cur.length>need){
+    const {n,r}=rsvpObjetivo(x),cur=(porKey[key]||[]).slice().sort((a,b)=>(a.rsvpSeq||0)-(b.rsvpSeq||0));
+    let keep=cur;
+    if(cur.length>n){
       const ord=cur.slice().sort((a,b)=>(a.mesa?1:0)-(b.mesa?1:0)||(b.rsvpSeq||0)-(a.rsvpSeq||0));
-      ord.slice(0,cur.length-need).forEach(i=>i.mesa?pl.excede.push({x,i}):pl.quitar.push({x,i}));
+      const sobran=ord.slice(0,cur.length-n);
+      sobran.forEach(i=>i.mesa?pl.excede.push({x,i}):pl.quitar.push({x,i}));
+      keep=cur.filter(i=>!sobran.includes(i));
+    }
+    keep.forEach(i=>{if(i.rsvp!==r)pl.cambiar.push({x,i,r})});
+    if(keep.length<n){
+      const usados=new Set(cur.map(i=>i.rsvpSeq));let k=1;
+      for(let m=keep.length;m<n;m++){while(usados.has(k))k++;usados.add(k);pl.agregar.push({x,key,seq:k,r})}
     }
   });
   Object.keys(porKey).forEach(k=>{if(!vistas.has(k))pl.huerfanas.push(...porKey[k])});
   return pl;
 }
-function rsvpAplicar(){
+function rsvpFila(x,key,seq,r){
+  return{id:nextId(S.invitados,'I'),hogar:x.nombre,nombreInv:x.nombre,nombre:seq===1?x.nombre:`${x.nombre} – acompañante ${seq}`,invitadoDe:'Ambos',grupo:'',edad:'Adulto',alcohol:'',telefono:RS().tel[key]||'',correo:'',invitacionEnviada:true,rsvp:r,fechaRsvp:rsvpFechaRsvp(x,r),menu:'Sin definir',alergias:'',transporte:false,hospedaje:false,mesa:'',asiento:'',regalo:false,agradecimiento:false,notas:r==='Pendiente'?`${x.pases} ${x.pases===1?'pase asignado':'pases asignados'}`:'',rsvpKey:key,rsvpSeq:seq};
+}
+function rsvpAplicar(quitarMan){
+  let man=0;
+  if(quitarMan){const a=S.invitados.length;S.invitados=S.invitados.filter(i=>i.rsvpKey);man=a-S.invitados.length}
   const pl=rsvpPlan();
   pl.quitar.forEach(({i})=>{const ix=S.invitados.indexOf(i);if(ix>=0)S.invitados.splice(ix,1)});
-  pl.agregar.forEach(({x,key,seq})=>{
-    S.invitados.push({id:nextId(S.invitados,'I'),hogar:x.nombre,nombreInv:x.nombre,nombre:seq===1?x.nombre:`${x.nombre} – acompañante ${seq}`,invitadoDe:'Ambos',grupo:'',edad:'Adulto',alcohol:'',telefono:'',correo:'',invitacionEnviada:true,rsvp:'Confirmado',fechaRsvp:fechaLocalISO(x.fecha),menu:'Sin definir',alergias:'',transporte:false,hospedaje:false,mesa:'',asiento:'',regalo:false,agradecimiento:false,notas:'',rsvpKey:key,rsvpSeq:seq});
-  });
+  pl.cambiar.forEach(({x,i,r})=>{i.rsvp=r;i.fechaRsvp=rsvpFechaRsvp(x,r)});
+  pl.agregar.forEach(({x,key,seq,r})=>{S.invitados.push(rsvpFila(x,key,seq,r))});
   save();render();
-  toast(`Listo: ${pl.agregar.length} lugares agregados${pl.quitar.length?`, ${pl.quitar.length} quitados`:''}`);
+  toast(`Listo: ${pl.agregar.length} agregados${pl.cambiar.length?`, ${pl.cambiar.length} actualizados`:''}${pl.quitar.length?`, ${pl.quitar.length} quitados`:''}${man?`, ${man} de ejemplo quitados`:''}`);
 }
 function rsvpResumenPlan(pl){
   const p=[];
-  if(pl.agregar.length)p.push(`se agregarán ${pl.agregar.length} lugares (${new Set(pl.agregar.map(a=>a.key)).size} invitaciones)`);
-  if(pl.quitar.length)p.push(`se quitarán ${pl.quitar.length} lugares que no tienen mesa`);
-  if(pl.excede.length)p.push(`${pl.excede.length} lugares ya sentados exceden lo confirmado y NO se tocan`);
+  if(pl.agregar.length)p.push(`se agregarán ${pl.agregar.length} registros (${new Set(pl.agregar.map(a=>a.key)).size} invitaciones)`);
+  if(pl.cambiar.length)p.push(`${pl.cambiar.length} cambiarán de estado (por ejemplo, de Pendiente a Confirmado)`);
+  if(pl.quitar.length)p.push(`se quitarán ${pl.quitar.length} que no tienen mesa`);
+  if(pl.excede.length)p.push(`${pl.excede.length} ya sentados exceden lo confirmado y NO se tocan`);
   return p;
 }
+let rsvpQuitarMan;
 function rsvpCSVPendientes(){
   const L=RS().lista.filter(x=>x.estado==='pendiente'),q=v=>'"'+String(v).replace(/"/g,'""')+'"';
   return '﻿'+['Invitación,Pases,Teléfono'].concat(L.map(x=>[q(x.nombre),x.pases,q(RS().tel[normTxt(x.nombre)]||'')].join(','))).join('\r\n');
@@ -2731,8 +2744,8 @@ function rsvpCSVPendientes(){
 VIEWS.confirmaciones=()=>{
   $('#pageTitle').textContent='Confirmaciones (RSVP)';
   $('#pageMeta').textContent='Lee las respuestas de tu Google Sheet: totales, pendientes, recordatorios y lugares para las mesas. La app solo lee; nunca modifica el Sheet.';
-  const R=RS(),L=R.lista,st=rsvpStats(L),conect=!!(CONN.url&&CONN.clave),pl=rsvpPlan(),cambios=pl.agregar.length+pl.quitar.length;
-  const hay=L.length>0,manuales=S.invitados.filter(i=>i.nombre&&!i.rsvpKey).length;
+  const R=RS(),L=R.lista,st=rsvpStats(L),conect=!!(CONN.url&&CONN.clave),pl=rsvpPlan(),cambios=pl.agregar.length+pl.quitar.length+pl.cambiar.length;
+  const hay=L.length>0,manuales=S.invitados.filter(i=>i.nombre&&!i.rsvpKey).length,quitarChk=rsvpQuitarMan===undefined?!S.invitados.some(i=>i.rsvpKey):rsvpQuitarMan;
   const act=rsvpEstado.ultima||R.ultima;
   const pct=n=>st.invTot?(n/st.invTot*100):0;
   const recientes=L.filter(x=>x.estado!=='pendiente'&&x.fecha).sort((a,b)=>new Date(b.fecha)-new Date(a.fecha)).slice(0,10);
@@ -2760,11 +2773,12 @@ VIEWS.confirmaciones=()=>{
     <div class="grid g2" style="margin-top:14px">
       <details class="card"><summary style="cursor:pointer;font-weight:600">Confirmados (${conf.length} invitaciones · ${st.siPases} personas)</summary><div class="alerts" style="margin-top:8px">${conf.map(x=>filaSimple(x,'si')).join('')}</div></details>
       <details class="card"><summary style="cursor:pointer;font-weight:600">No asistirán (${nos.length} invitaciones · ${st.noPases} pases)</summary><div class="alerts" style="margin-top:8px">${nos.map(x=>filaSimple(x,'no')).join('')||'<p class="help">Ninguno.</p>'}</div></details></div>
-    <div class="card" style="margin-top:14px"><h3>Lugares para las mesas</h3>
-      <p class="help" style="margin-top:6px">Crea en <b>Invitados</b> un lugar por cada persona que confirmó (si tenías 6 pases y vienen 4, se crean 4, agrupados por invitación). Después puedes renombrar a cada acompañante y asignar mesa. Es incremental: no duplica, no mueve a quien ya tiene mesa, y nunca borra a alguien sentado.</p>
-      <div class="toolbar" style="margin-top:10px"><span>${cambios||pl.excede.length?esc((t=>t.charAt(0).toUpperCase()+t.slice(1))(rsvpResumenPlan(pl).join('; ')+'.')):'<b>Todo al día ✓</b> Los lugares de la app coinciden con lo confirmado.'}</span><span class="spacer"></span><button class="btn primary" id="rAplicar" ${cambios?'':'disabled'}>Pasar confirmados a mesas</button></div>
-      ${pl.huerfanas.length?`<p class="help" style="color:var(--coral)">${pl.huerfanas.length} lugares vienen de invitaciones que ya no aparecen en el Sheet (¿cambió el nombre?). No se borran.</p>`:''}
-      ${manuales&&S.invitados.some(i=>i.rsvpKey)?`<p class="help">Hay ${manuales} invitados en la app que no vienen del Sheet (capturados o de ejemplo). <button class="btn small danger" id="rQuitarManuales">Quitarlos</button></p>`:''}</div>`:'';
+    <div class="card" style="margin-top:14px"><h3>Lista de Invitados de la app</h3>
+      <p class="help" style="margin-top:6px">Pasa tus nombres reales del Sheet a <b>Invitados</b>: una fila por cada invitación pendiente o que no asistirá, y un lugar por cada persona que confirmó (si tenías 6 pases y vienen 4, se crean 4). Cuando un pendiente confirme, su fila se convierte en sus lugares. Es incremental: no duplica, no mueve a quien ya tiene mesa y nunca borra a alguien sentado.</p>
+      ${manuales?`<label class="medida" style="display:flex;gap:8px;align-items:flex-start;margin-top:8px"><input type="checkbox" id="rQuitarMan" ${quitarChk?'checked':''}> <span>Quitar antes los <b>${manuales}</b> invitados que no vienen del Sheet (ejemplo o capturados a mano)</span></label>`:''}
+      <div class="toolbar" style="margin-top:10px"><span>${cambios||pl.excede.length?esc((t=>t.charAt(0).toUpperCase()+t.slice(1))(rsvpResumenPlan(pl).join('; ')+'.')):'<b>Todo al día ✓</b> La lista de Invitados coincide con tu Sheet.'}</span><span class="spacer"></span><button class="btn primary" id="rAplicar" ${cambios||(manuales&&quitarChk)?'':'disabled'}>Actualizar lista de Invitados</button></div>
+      ${pl.huerfanas.length?`<p class="help" style="color:var(--coral)">${pl.huerfanas.length} registros vienen de invitaciones que ya no aparecen en el Sheet (¿cambió el nombre?). No se borran.</p>`:''}
+    </div>`:'';
   view.innerHTML=`<div class="toolbar"><button class="btn primary" id="rSync" ${rsvpEstado.cargando?'disabled':''}>${rsvpEstado.cargando?'Sincronizando…':'Sincronizar ahora'}</button>
       <label class="medida" style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="rAuto" ${CONN.auto?'checked':''}> Actualizar cada 30 s</label><span class="spacer"></span>
       <span class="help">${act?'Actualizado '+esc(horaCorta(act))+(CONN.auto?' · se refresca cada 30 s':''):'Sin sincronizar'}</span></div>
@@ -2801,11 +2815,11 @@ VIEWS.confirmaciones=()=>{
   const b=$('#rBuscar');if(b)b.oninput=()=>{const q=normTxt(b.value);view.querySelectorAll('#rPendList [data-rsvpn]').forEach(r=>{r.style.display=!q||r.dataset.rsvpn.includes(q)?'':'none'})};
   const cn=$('#rCopiarNom');if(cn)cn.onclick=()=>{const t=pend.map(x=>x.nombre).join('\n');navigator.clipboard.writeText(t).then(()=>toast('Nombres copiados')).catch(()=>toast('No se pudo copiar'))};
   const cs=$('#rCsv');if(cs)cs.onclick=()=>guardarArchivo('pendientes-rsvp-'+today()+'.csv',new Blob([rsvpCSVPendientes()],{type:'text/csv;charset=utf-8'}));
-  view.querySelectorAll('[data-rtel]').forEach(i=>i.onchange=()=>{RS().tel[i.dataset.rtel]=i.value.trim();save();render()});
+  view.querySelectorAll('[data-rtel]').forEach(i=>i.onchange=()=>{const k=i.dataset.rtel,v=i.value.trim();RS().tel[k]=v;S.invitados.forEach(g=>{if(g.rsvpKey===k)g.telefono=v});save();render()});
   view.querySelectorAll('[data-rcopy]').forEach(bn=>bn.onclick=()=>{const x=RS().lista.find(y=>normTxt(y.nombre)===bn.dataset.rcopy);if(x)copiarTxt(msgTexto({nombre:x.nombre,saludo:x.nombre,hogar:x.nombre,mesa:''},'recordatorioWeb'))});
   view.querySelectorAll('[data-rwa]').forEach(a=>a.addEventListener('click',()=>{RS().rec[a.dataset.rwa]=hoy;save();setTimeout(render,300)}));
-  const ap=$('#rAplicar');if(ap)ap.onclick=()=>{const p=rsvpPlan();confirmar('Pasar confirmados a mesas','Esto hará lo siguiente: '+rsvpResumenPlan(p).join('; ')+'. Puedes deshacerlo con Deshacer.','Aplicar',rsvpAplicar)};
-  const qm=$('#rQuitarManuales');if(qm)qm.onclick=()=>confirmar('Quitar invitados que no vienen del Sheet',`Se quitarán ${manuales} invitados capturados a mano o de ejemplo. Los lugares creados desde el Sheet se quedan. Puedes deshacerlo.`,'Quitar',()=>{S.invitados=S.invitados.filter(i=>i.rsvpKey);save();render();toast('Invitados manuales quitados')});
+  const qm=$('#rQuitarMan');if(qm)qm.onchange=()=>{rsvpQuitarMan=qm.checked;render()};
+  const ap=$('#rAplicar');if(ap)ap.onclick=()=>{const p=rsvpPlan(),q=!!(manuales&&quitarChk);const partes=rsvpResumenPlan(p);if(q)partes.unshift(`se quitarán ${manuales} invitados que no vienen del Sheet (ejemplo o capturados a mano)`);confirmar('Actualizar lista de Invitados','Esto hará lo siguiente: '+partes.join('; ')+'. Puedes deshacerlo con Deshacer.','Aplicar',()=>rsvpAplicar(q))};
 };
 
 VIEWS.mesas = ()=>{
