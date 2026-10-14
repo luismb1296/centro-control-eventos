@@ -2734,15 +2734,19 @@ function rsvpStats(L){
 }
 /* Lista de Invitados: una fila por cada pase asignado (pendientes y los que no asisten) y una fila por cada persona que confirmó.
    Compara el Sheet con los invitados de la app que vienen de él (rsvpKey). Solo agrega o quita filas SIN mesa; a quien ya tiene mesa no lo borra. */
-function rsvpObjetivo(x){const p=Math.max(1,x.pases||0);return x.estado==='si'?{n:Math.max(1,x.asistiran),r:'Confirmado'}:x.estado==='no'?{n:p,r:'Declinado'}:{n:p,r:'Pendiente'}}
+function rsvpObjetivo(x){
+  const p=Math.max(1,x.pases||0);
+  if(x.estado==='si'){const c=Math.max(1,x.asistiran||0);return{n:Math.max(p,c),c,r:'Confirmado'}}
+  return{n:p,c:0,r:x.estado==='no'?'Declinado':'Pendiente'};
+}
 function rsvpFechaRsvp(x,r){return r==='Pendiente'||!x.fecha?'':fechaLocalISO(x.fecha)}
 function rsvpPlan(){
   const L=RS().lista,pl={agregar:[],quitar:[],excede:[],cambiar:[],huerfanas:[]};
   const porKey={};S.invitados.forEach(i=>{if(i.rsvpKey)(porKey[i.rsvpKey]=porKey[i.rsvpKey]||[]).push(i)});
   const vistas=new Set();
   L.forEach(x=>{
-    const key=normTxt(x.nombre);vistas.add(key);
-    const {n,r}=rsvpObjetivo(x),cur=(porKey[key]||[]).slice().sort((a,b)=>(a.rsvpSeq||0)-(b.rsvpSeq||0));
+    const key=normTxt(x.nombre);if(vistas.has(key))return;vistas.add(key);
+    const {n,c,r}=rsvpObjetivo(x),cur=(porKey[key]||[]).slice().sort((a,b)=>(a.rsvpSeq||0)-(b.rsvpSeq||0));
     let keep=cur;
     if(cur.length>n){
       const ord=cur.slice().sort((a,b)=>(a.mesa?1:0)-(b.mesa?1:0)||(b.rsvpSeq||0)-(a.rsvpSeq||0));
@@ -2750,24 +2754,42 @@ function rsvpPlan(){
       sobran.forEach(i=>i.mesa?pl.excede.push({x,i}):pl.quitar.push({x,i}));
       keep=cur.filter(i=>!sobran.includes(i));
     }
-    keep.forEach(i=>{if(i.rsvp!==r)pl.cambiar.push({x,i,r})});
+    /* Confirmada: las primeras c filas (sentados primero) quedan Confirmado y el resto Declinado (pase sin usar). */
+    const ord=keep.slice().sort((a,b)=>(b.mesa?1:0)-(a.mesa?1:0)||((b.rsvp==='Confirmado')?1:0)-((a.rsvp==='Confirmado')?1:0)||(a.rsvpSeq||0)-(b.rsvpSeq||0));
+    ord.forEach((i,idx)=>{
+      const want=r==='Confirmado'?(idx<c?'Confirmado':'Declinado'):r;
+      if(i.rsvp!==want){ if(i.mesa&&want==='Declinado'&&r==='Confirmado')pl.excede.push({x,i}); else pl.cambiar.push({x,i,r:want}) }
+    });
     if(keep.length<n){
       const usados=new Set(cur.map(i=>i.rsvpSeq));let k=1;
-      for(let m=keep.length;m<n;m++){while(usados.has(k))k++;usados.add(k);pl.agregar.push({x,key,seq:k,r})}
+      for(let m=keep.length;m<n;m++){while(usados.has(k))k++;usados.add(k);pl.agregar.push({x,key,seq:k,r:r==='Confirmado'?(m<c?'Confirmado':'Declinado'):r})}
     }
   });
   Object.keys(porKey).forEach(k=>{if(!vistas.has(k))pl.huerfanas.push(...porKey[k])});
   return pl;
 }
+function rsvpAnomalias(L){
+  const o=[],cnt={};L.forEach(x=>{const k=normTxt(x.nombre);cnt[k]=(cnt[k]||0)+1});
+  const dup=new Set();
+  L.forEach(x=>{
+    const k=normTxt(x.nombre);
+    if(cnt[k]>1&&!dup.has(k)){dup.add(k);o.push(`"${x.nombre}" aparece ${cnt[k]} veces en el Sheet. La app las trata como una sola invitación: ponles un nombre distinto en el Sheet.`)}
+    if(x.estado==='si'&&!(x.asistiran>0))o.push(`${x.nombre}: dice que asistirá pero la columna "cuántos" está vacía o en 0 (se cuenta 1).`);
+    if(x.estado==='si'&&x.asistiran>x.pases)o.push(`${x.nombre}: confirmaron ${x.asistiran} y tiene ${x.pases} pases asignados.`);
+    if(!(x.pases>0))o.push(`${x.nombre}: no tiene pases asignados (se cuenta 1).`);
+  });
+  return o;
+}
+function rsvpNota(x,r){return r==='Pendiente'?`${x.pases} ${x.pases===1?'pase asignado':'pases asignados'}`:(x.estado==='si'&&r==='Declinado'?'Pase sin usar':'')}
 function rsvpFila(x,key,seq,r){
-  return{id:nextId(S.invitados,'I'),hogar:x.nombre,nombreInv:x.nombre,nombre:seq===1?x.nombre:`${x.nombre} – acompañante ${seq}`,invitadoDe:'Ambos',grupo:'',edad:'Adulto',alcohol:'',telefono:RS().tel[key]||'',correo:'',invitacionEnviada:true,rsvp:r,fechaRsvp:rsvpFechaRsvp(x,r),menu:menuNuevo(),alergias:'',transporte:false,hospedaje:false,mesa:'',asiento:'',regalo:false,agradecimiento:false,notas:r==='Pendiente'?`${x.pases} ${x.pases===1?'pase asignado':'pases asignados'}`:'',rsvpKey:key,rsvpSeq:seq};
+  return{id:nextId(S.invitados,'I'),hogar:x.nombre,nombreInv:x.nombre,nombre:seq===1?x.nombre:`${x.nombre} – acompañante ${seq}`,invitadoDe:'Ambos',grupo:'',edad:'Adulto',alcohol:'',telefono:RS().tel[key]||'',correo:'',invitacionEnviada:true,rsvp:r,fechaRsvp:rsvpFechaRsvp(x,r),menu:menuNuevo(),alergias:'',transporte:false,hospedaje:false,mesa:'',asiento:'',regalo:false,agradecimiento:false,notas:rsvpNota(x,r),rsvpKey:key,rsvpSeq:seq};
 }
 function rsvpAplicar(quitarMan){
   let man=0;
   if(quitarMan){const a=S.invitados.length;S.invitados=S.invitados.filter(i=>i.rsvpKey);man=a-S.invitados.length}
   const pl=rsvpPlan();
   pl.quitar.forEach(({i})=>{const ix=S.invitados.indexOf(i);if(ix>=0)S.invitados.splice(ix,1)});
-  pl.cambiar.forEach(({x,i,r})=>{i.rsvp=r;i.fechaRsvp=rsvpFechaRsvp(x,r)});
+  pl.cambiar.forEach(({x,i,r})=>{i.rsvp=r;i.fechaRsvp=rsvpFechaRsvp(x,r);if(!i.notas||/pases? (asignados?|sin usar)$/.test(i.notas))i.notas=rsvpNota(x,r)});
   pl.agregar.forEach(({x,key,seq,r})=>{S.invitados.push(rsvpFila(x,key,seq,r))});
   save();render();
   toast(`Listo: ${pl.agregar.length} agregados${pl.cambiar.length?`, ${pl.cambiar.length} actualizados`:''}${pl.quitar.length?`, ${pl.quitar.length} quitados`:''}${man?`, ${man} de ejemplo quitados`:''}`);
@@ -2820,9 +2842,11 @@ VIEWS.confirmaciones=()=>{
       <details class="card"><summary style="cursor:pointer;font-weight:600">Confirmados (${conf.length} invitaciones · ${st.siPases} personas)</summary><div class="alerts" style="margin-top:8px">${conf.map(x=>filaSimple(x,'si')).join('')}</div></details>
       <details class="card"><summary style="cursor:pointer;font-weight:600">No asistirán (${nos.length} invitaciones · ${st.noPases} pases)</summary><div class="alerts" style="margin-top:8px">${nos.map(x=>filaSimple(x,'no')).join('')||'<p class="help">Ninguno.</p>'}</div></details></div>
     <div class="card" style="margin-top:14px"><h3>Lista de Invitados de la app</h3>
-      <p class="help" style="margin-top:6px">Pasa tus nombres reales del Sheet a <b>Invitados</b>: un lugar por cada pase asignado mientras la invitación está pendiente o no asistirá (2 pases = 2 filas), y por cada persona que confirmó (si tenías 6 pases y vienen 4, quedan 4). Cuando un pendiente confirme, sus filas se ajustan a las personas que vienen. Es incremental: no duplica, no mueve a quien ya tiene mesa y nunca borra a alguien sentado.</p>
+      <p class="help" style="margin-top:6px">Pasa tus nombres reales del Sheet a <b>Invitados</b>: una fila por cada pase asignado, así el total siempre coincide con tus pases. Pendientes = Pendiente, personas que vienen = Confirmado, y los que no vienen o son pases sin usar = Declinado (si tenías 6 pases y vienen 4, quedan 4 Confirmado y 2 Declinado). Es incremental: no duplica, no mueve a quien ya tiene mesa y nunca borra a alguien sentado.</p>
       ${manuales?`<label class="medida" style="display:flex;gap:8px;align-items:flex-start;margin-top:8px"><input type="checkbox" id="rQuitarMan" ${quitarChk?'checked':''}> <span>Quitar antes los <b>${manuales}</b> invitados que no vienen del Sheet (ejemplo o capturados a mano)</span></label>`:''}
       <div class="toolbar" style="margin-top:10px"><span>${cambios||pl.excede.length?esc((t=>t.charAt(0).toUpperCase()+t.slice(1))(rsvpResumenPlan(pl).join('; ')+'.')):'<b>Todo al día ✓</b> La lista de Invitados coincide con tu Sheet.'}</span><span class="spacer"></span><button class="btn primary" id="rAplicar" ${cambios||(manuales&&quitarChk)?'':'disabled'}>Actualizar lista de Invitados</button></div>
+      <p class="help" style="margin-top:8px">Sheet: <b>${st.pasesAsig}</b> pases · Lista de Invitados: <b>${S.invitados.filter(i=>i.rsvpKey).length}</b> filas del Sheet (${S.invitados.filter(i=>i.rsvpKey&&i.rsvp==='Confirmado').length} Confirmado · ${S.invitados.filter(i=>i.rsvpKey&&i.rsvp==='Pendiente').length} Pendiente · ${S.invitados.filter(i=>i.rsvpKey&&i.rsvp==='Declinado').length} Declinado). Confirmados según el Sheet: <b>${st.siPases}</b>.</p>
+      ${(an=>an.length?`<div class="help" style="color:var(--coral);margin-top:6px"><b>Revisa estos datos del Sheet:</b><ul style="margin:4px 0 0 18px">${an.slice(0,12).map(a=>`<li>${esc(a)}</li>`).join('')}${an.length>12?`<li>…y ${an.length-12} más</li>`:''}</ul></div>`:'')(rsvpAnomalias(L))}
       ${pl.huerfanas.length?`<p class="help" style="color:var(--coral)">${pl.huerfanas.length} registros vienen de invitaciones que ya no aparecen en el Sheet (¿cambió el nombre?). No se borran.</p>`:''}
     </div>`:'';
   view.innerHTML=`<div class="toolbar"><button class="btn primary" id="rSync" ${rsvpEstado.cargando?'disabled':''}>${rsvpEstado.cargando?'Sincronizando…':'Sincronizar ahora'}</button>
