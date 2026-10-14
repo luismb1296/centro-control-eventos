@@ -336,6 +336,7 @@ table.simple{width:100%;border-collapse:collapse;font-size:13px}table.simple th{
    ESTADO Y PERSISTENCIA
    ================================================================== */
 const STORE_KEY = 'ccb.v1';
+const MENUS_BASE=['Estándar','Vegetariano','Vegano','Infantil','Otro'];
 const LISTAS = {
   estadoGasto:['Por cotizar','Cotizado','En negociación','Contratado','Liquidado','Cancelado'],
   tipoCosto:['Fijo','Por invitado','Por unidad'],
@@ -345,7 +346,7 @@ const LISTAS = {
   rsvp:['Pendiente','Confirmado','Declinado'],
   edad:['Adulto','Adolescente','Niño','Bebé'],
   siNo:['Sí','No'],
-  menu:['Sin definir','Estándar','Vegetariano','Vegano','Infantil','Otro'],
+  get menu(){const m=(typeof S!=='undefined'&&S&&S.config&&Array.isArray(S.config.menus)&&S.config.menus.length)?S.config.menus:MENUS_BASE;return ['Sin definir',...m.filter(x=>x!=='Sin definir')]},
   estadoProveedor:['Por investigar','Contactado','Cotizado','En negociación','Contratado','Descartado'],
   estadoDecision:['Pendiente','Investigando','Decidida','Descartada'],
   tipoMesa:['Redonda','Cuadrada','Rectangular','Imperial','Mesa de honor','Ovalada','Otra'],
@@ -529,6 +530,7 @@ function areaOcupada(st){
 // Completa los datos guardados antes de existir las medidas reales
 function migrar(d){
   const c=d.config;
+  if(!Array.isArray(c.menus)||!c.menus.length)c.menus=[...MENUS_BASE];
   if(c.salonL==null)c.salonL=30; if(c.salonA==null)c.salonA=20; if(c.pasillo==null)c.pasillo=0.8;
   d.elementos=d.elementos||[]; if(d.fondo===undefined)d.fondo=null;
   d.restricciones=d.restricciones||[];
@@ -554,7 +556,7 @@ function plantillaVacia(){
   const cfg = {
     pareja1:'', pareja2:'', evento:'Nuestra boda', fecha:boda, inicio:today(),
     presupuesto:0, contingencia:5, invitadosEst:150, rsvpLimite:addDays(boda,-40),
-    moneda:'MXN', ciudad:'', categorias:[...CATEGORIAS_BASE], responsables:['Pareja 1','Pareja 2','Ambos','Wedding planner','Familia','Otro'], grupos:['Familia','Amigos','Trabajo','Cortejo','Otro'], zonas:['Salón','Terraza','Jardín'], salonL:30, salonA:20, pasillo:0.8
+    moneda:'MXN', ciudad:'', categorias:[...CATEGORIAS_BASE], responsables:['Pareja 1','Pareja 2','Ambos','Wedding planner','Familia','Otro'], grupos:['Familia','Amigos','Trabajo','Cortejo','Otro'], zonas:['Salón','Terraza','Jardín'], menus:[...MENUS_BASE], salonL:30, salonA:20, pasillo:0.8
   };
   const conceptos = [
     ['Planeación','Wedding planner',1],['Ceremonia','Iglesia / sede ceremonia',1],['Ceremonia','Oficiante',1],['Ceremonia','Música de ceremonia',0],
@@ -1135,16 +1137,20 @@ VIEWS.config = ()=>{
       ${listaEditable('responsables','Responsables','Aparecen en Cronograma, Día del evento y Decisiones.')}
       ${listaEditable('grupos','Grupos de invitados','Para filtrar y organizar la lista de invitados.')}
       ${listaEditable('zonas','Zonas del venue','Para ubicar las mesas en el plano.')}
+      ${listaEditable('menus','Menús del evento','Escribe los nombres de tus menús (por ejemplo: Menú único, Res, Pollo, Vegetariano). Si dejas solo uno, se asigna a todos los invitados.')}
     </div>${plantillasHTML()}${exportHTML()}`;
-  view.querySelectorAll('[data-plantilla]').forEach(b=>b.onclick=()=>confirmar('Cargar plantilla: '+b.dataset.plantilla,'Se reemplazarán los datos actuales (presupuesto, cronograma, invitados, mesas…). Exporta un respaldo antes si los necesitas.','Cargar',()=>{S=plantillaEvento(b.dataset.plantilla);S.ui.tab='config';save();render();toast('Plantilla cargada')}));
+  view.querySelectorAll('[data-plantilla]').forEach(b=>b.onclick=()=>confirmar('Cargar plantilla: '+b.dataset.plantilla,'Se reemplazarán presupuesto, cronograma, invitados, mesas y demás listas. Se conservan tus datos de configuración (nombres, fecha, ciudad, presupuesto objetivo, etc.). Puedes usar Deshacer si te equivocas.','Cargar',()=>{S=plantillaEvento(b.dataset.plantilla);S.ui.tab='config';save();render();toast('Plantilla cargada')}));
   const pi=$('#pdfInforme');if(pi)pi.onclick=pdfInforme;
   view.querySelectorAll('[data-cfg]').forEach(el=>el.onchange=()=>{if(el.type==='date'&&!fechaCompleta(el.value))return;c[el.dataset.cfg]=el.type==='number'?num(el.value):el.value;save();renderNav();toast('Guardado')});
-  view.querySelectorAll('[data-list-add]').forEach(b=>b.onclick=()=>{const k=b.dataset.listAdd;const inp=view.querySelector(`[data-list-input="${k}"]`);const v=inp.value.trim();if(!v)return;if(c[k].includes(v)){toast('Ya existe');return}c[k].push(v);save();render();});
+  view.querySelectorAll('[data-list-add]').forEach(b=>b.onclick=()=>{const k=b.dataset.listAdd;const inp=view.querySelector(`[data-list-input="${k}"]`);const v=inp.value.trim();if(!v)return;if(c[k].includes(v)){toast('Ya existe');return}c[k].push(v);if(k==='menus')menuUnico();save();render();});
   view.querySelectorAll('[data-list-input]').forEach(i=>i.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();view.querySelector(`[data-list-add="${i.dataset.listInput}"]`).click()}});
   view.querySelectorAll('[data-list-del]').forEach(b=>b.onclick=()=>{const [k,idx]=b.dataset.listDel.split(':');const val=c[k][+idx];const enUso = k==='categorias'? S.gastos.filter(g=>g.categoria===val).length : 0;
     if(enUso){toast(`${enUso} gastos usan esta categoría; cámbialos primero`);return}
-    c[k].splice(+idx,1);save();render()});
+    if(k==='menus'&&c.menus.length<=1){toast('Debe quedar al menos un menú');return}
+    c[k].splice(+idx,1);if(k==='menus'){S.invitados.forEach(i=>{if(i.menu===val)i.menu='Sin definir'});menuUnico()}save();render()});
 };
+function menuUnico(){const m=S.config.menus||[];if(m.length===1)S.invitados.forEach(i=>{i.menu=m[0]})}
+const menuNuevo=()=>{const m=S.config.menus||[];return m.length===1?m[0]:'Sin definir'};
 function listaEditable(k,titulo,ayuda){
   return `<div class="card"><h3>${titulo}</h3><p class="help">${ayuda}</p><div class="chips" style="margin-top:12px">${S.config[k].map((v,i)=>`<span class="chip">${esc(v)}<button data-list-del="${k}:${i}" aria-label="Quitar ${esc(v)}">✕</button></span>`).join('')}</div><div class="inline-add"><input data-list-input="${k}" placeholder="Nueva…" aria-label="Nuevo elemento"><button class="btn" data-list-add="${k}">Agregar</button></div></div>`;
 }
@@ -1271,7 +1277,7 @@ VIEWS.invitados = ()=>{
     <div style="margin:18px 0 12px" class="legendkey"><span><i class="e"></i>Editable</span><span><i class="a"></i>Automático</span></div>
     ${importHTML()}
     <div data-list="invitados">${toolbar('invitados',`<select data-filter="rsvp"><option value="">Todo RSVP</option>${LISTAS.rsvp.map(x=>`<option ${f.rsvp===x?'selected':''}>${x}</option>`).join('')}</select><select data-filter="ctrl"><option value="">Sin filtro de control</option><option value="sinmesa" ${f.ctrl==='sinmesa'?'selected':''}>Confirmados sin mesa</option><option value="dup" ${f.ctrl==='dup'?'selected':''}>Asientos duplicados</option></select>`)}${tableHTML(rows,cols,{del:true,empty:'Aún no hay invitados. Agrega una persona por fila.'})}</div>`;
-  bindToolbar('invitados',()=>{S.invitados.push({id:nextId(S.invitados,'I'),hogar:'',nombreInv:'',nombre:'',invitadoDe:'Ambos',grupo:'',edad:'Adulto',alcohol:'',telefono:'',correo:'',invitacionEnviada:false,rsvp:'Pendiente',fechaRsvp:'',menu:'Sin definir',alergias:'',transporte:false,hospedaje:false,mesa:'',asiento:'',regalo:false,agradecimiento:false,notas:''});save();pendingFocus={id:S.invitados[S.invitados.length-1].id,key:'hogar'};render();});
+  bindToolbar('invitados',()=>{S.invitados.push({id:nextId(S.invitados,'I'),hogar:'',nombreInv:'',nombre:'',invitadoDe:'Ambos',grupo:'',edad:'Adulto',alcohol:'',telefono:'',correo:'',invitacionEnviada:false,rsvp:'Pendiente',fechaRsvp:'',menu:menuNuevo(),alergias:'',transporte:false,hospedaje:false,mesa:'',asiento:'',regalo:false,agradecimiento:false,notas:''});save();pendingFocus={id:S.invitados[S.invitados.length-1].id,key:'hogar'};render();});
 };
 
 /* ==================================================================
@@ -1799,6 +1805,7 @@ async function pdfListaAcomodo(){
   if(sin.length){y+=10;fila('Confirmados sin mesa asignada','','',true);sin.forEach(i=>fila(i.nombre,'—','—'))}
   pieDePaginas(d);await guardarPdf(d,'lista-acomodo');
 }
+const menusTabla=f=>LISTAS.menu.filter(k=>k!=='Sin definir'||f.some(x=>x.mm['Sin definir']));
 function resumenMenus(lista){const m={};LISTAS.menu.forEach(k=>m[k]=0);lista.forEach(i=>{const k=LISTAS.menu.includes(i.menu)?i.menu:'Sin definir';m[k]++});return m}
 async function pdfPorMesa(){
   const mesas=S.mesas.filter(m=>m.nombre);
@@ -1815,7 +1822,7 @@ async function pdfPorMesa(){
     g.forEach(i=>{salto(16);d.texto(54,y,i.asiento||'—',{size:9.5});d.texto(84,y,i.nombre,{size:9.5,max:190});d.texto(280,y,i.menu||'Sin definir',{size:9.5,max:90,gris:0.3});d.texto(375,y,i.alergias||'',{size:9.5,max:d.w-375-54,bold:!!i.alergias});y+=14});y+=10;
   });
   salto(120);d.texto(48,y,'Totales por menú (todos los confirmados con mesa)',{size:11,bold:true});y+=16;
-  const tot=resumenMenus(invConfMesa());LISTAS.menu.forEach(k=>{d.texto(54,y,k,{size:10});d.texto(220,y,String(tot[k]),{size:10,align:'r'});y+=14});
+  const tot=resumenMenus(invConfMesa());LISTAS.menu.filter(k=>k!=='Sin definir'||tot[k]).forEach(k=>{d.texto(54,y,k,{size:10});d.texto(220,y,String(tot[k]),{size:10,align:'r'});y+=14});
   const al=invConfMesa().filter(i=>i.alergias);
   if(al.length){y+=10;salto(30);d.texto(48,y,'Alergias y restricciones alimentarias',{size:11,bold:true});y+=16;al.forEach(i=>{salto(16);d.texto(54,y,`${i.nombre} (${i.mesa})`,{size:10,max:240});d.texto(310,y,i.alergias,{size:10,max:d.w-310-54});y+=14})}
   pieDePaginas(d);await guardarPdf(d,'menus-alergias-por-mesa');
@@ -2198,9 +2205,17 @@ const PLANTILLAS_EVENTO={
   elem:['Mesa de pastel','Mesa de regalos','Área de niños','Photobooth'],mesas:[8,'Redonda',10],honor:false}
 };
 function plantillaEvento(tipo){
-  const st=plantillaVacia(),t=PLANTILLAS_EVENTO[tipo];st.config.tipoEvento=tipo;
+  const st=plantillaVacia(),t=PLANTILLAS_EVENTO[tipo],ant=(typeof S!=='undefined'&&S&&S.config)?S.config:null;
+  if(ant){
+    const nomDef=['Nuestra boda',...Object.values(PLANTILLAS_EVENTO).map(x=>x.evento)];
+    Object.assign(st.config,JSON.parse(JSON.stringify(ant)));
+    if(!ant.evento||nomDef.includes(ant.evento))st.config.evento=t?t.evento:(ant.evento||'Nuestra boda');
+    st.rsvp=JSON.parse(JSON.stringify(S.rsvp||st.rsvp||{lista:[],ultima:'',sitio:'',tel:{},rec:{}}));
+    if(S.fondo)st.fondo=S.fondo;
+  }
+  st.config.tipoEvento=tipo;
   if(!t)return st;
-  st.config.evento=t.evento;
+  if(!ant)st.config.evento=t.evento;
   st.gastos.forEach(g=>{g.incluir=t.inc.includes(g.concepto)});
   t.extra.forEach(([cat,con,es])=>{if(!st.config.categorias.includes(cat))st.config.categorias.push(cat);st.gastos.push({id:nextId(st.gastos,'G'),incluir:true,categoria:cat,concepto:con,esencial:!!es,estado:'Por cotizar',proveedorId:'',tipoCosto:'Fijo',cantidad:1,unitario:'',cotizacion:'',costoFinal:'',fechaLimite:'',notas:''})});
   st.tareas=t.tareas.map((x,i)=>({id:'T'+pad(i+1),incluir:true,fase:x[0],tarea:x[1],responsable:'Ambos',prioridad:x[2],estado:'No iniciada',diasAntes:x[3],fechaPersonalizada:'',fechaCompletada:'',proveedorId:'',notas:''}));
@@ -2213,11 +2228,12 @@ function plantillaEvento(tipo){
   if(t.honor)st.mesas.push({id:'M'+pad(n+1),nombre:'Mesa de honor',tipo:'Mesa de honor',zona:'Salón',capacidad:8,...medidasPorDefecto('Mesa de honor',8),x:null,y:null,rot:0});
   if(tipo==='Corporativo')st.ceremonia.habra=false;
   else{const gn=tipo==='XV años'?'Misa de acción de gracias (XV años)':'Bautizo';const g=guionDatos(gn);st.ceremonia.tipo=gn;st.liturgia=g.liturgia;st.participantes=g.participantes}
+  st.gastos.forEach(g=>{if(g.categoria&&!st.config.categorias.includes(g.categoria))st.config.categorias.push(g.categoria)});
   colocarPendientes(st);return st;
 }
 function plantillasHTML(){
   const act=S.config.tipoEvento||'Boda';
-  return `<div class="card" style="margin-top:14px"><h3>Plantilla por tipo de evento</h3><p class="help">Carga presupuesto, cronograma, día del evento, decisiones y mobiliario sugeridos para cada tipo de evento. <b>Reemplaza los datos actuales</b>; exporta un respaldo antes si los necesitas. Tipo actual: <b>${esc(act)}</b>.</p>
+  return `<div class="card" style="margin-top:14px"><h3>Plantilla por tipo de evento</h3><p class="help">Carga presupuesto, cronograma, día del evento, decisiones y mobiliario sugeridos para cada tipo de evento. <b>Reemplaza presupuesto, cronograma, invitados y mesas</b>, pero conserva tu configuración (nombres, fecha, ciudad, presupuesto objetivo…); exporta un respaldo antes si lo necesitas. Tipo actual: <b>${esc(act)}</b>.</p>
     <div class="rotbtns">${['Boda','XV años','Corporativo','Bautizo / Comunión'].map(t=>`<button class="btn" data-plantilla="${esc(t)}">${esc(t)}</button>`).join('')}</div></div>
    <div class="card" style="margin-top:14px"><h3>Informe para el cliente</h3><p class="help">PDF con resumen, presupuesto por categoría, pagos y pendientes, y el plano. Si escribes tu agencia y contacto, aparecen en el encabezado.</p>
     <div class="form" style="margin-top:12px"><label>Agencia / marca<input type="text" data-cfg="agencia" value="${esc(S.config.agencia||'')}" placeholder="Ej. Eventos Mérida"></label><label>Contacto (teléfono / correo)<input type="text" data-cfg="contacto" value="${esc(S.config.contacto||'')}"></label><label>Distancia máxima a una salida (m)<input type="number" data-cfg="evacMax" min="5" step="1" value="${esc(S.config.evacMax??25)}"></label></div>
@@ -2322,7 +2338,7 @@ function importarFilas(rows){
   datos.forEach(r=>{
     const g=k=>map[k]!==undefined?String(r[map[k]]??'').trim():'',nombre=g('nombre');
     if(!nombre)return;if(existentes.has(normTxt(nombre))){omit++;return}existentes.add(normTxt(nombre));
-    const menu=LISTAS.menu.find(m=>normTxt(m)===normTxt(g('menu')))||'Sin definir',alc=normTxt(g('alcohol'));
+    const menu=LISTAS.menu.find(m=>normTxt(m)===normTxt(g('menu')))||menuNuevo(),alc=normTxt(g('alcohol'));
     S.invitados.push({id:nextId(S.invitados,'I'),hogar:g('hogar'),nombreInv:nombre,nombre,invitadoDe:'Ambos',grupo:S.config.grupos.find(x=>normTxt(x)===normTxt(g('grupo')))||'',edad:edad(g('edad')),alcohol:/^(no)/.test(alc)?'No':/^(si|sí)/.test(alc)?'Sí':'',telefono:g('telefono'),correo:g('correo'),invitacionEnviada:false,rsvp:rsvp(g('rsvp')),fechaRsvp:'',menu,alergias:g('alergias'),transporte:false,hospedaje:false,mesa:'',asiento:'',regalo:false,agradecimiento:false,notas:''});n++;
   });
   return{n,omit};
@@ -2591,6 +2607,35 @@ VIEWS.ceremonia=()=>{
     $('#addN').onclick=()=>{S.participantes.push({id:nextId(S.participantes,'N'),rol:'Lector',asignacion:'',nombre:'',parentesco:'',telefono:'',confirmado:false,ensayo:false,notas:''});save();pendingFocus={id:S.participantes[S.participantes.length-1].id,key:'nombre'};render()};
   }
 };
+
+function envolverPdf(d,txt,size,max,maxL=3,bold=false){
+  const pal=String(txt??'').split(/\s+/).filter(Boolean),out=[];let l='';
+  for(const w of pal){const t=l?l+' '+w:w;if(d.ancho(t,size,bold)<=max)l=t;else{if(l)out.push(l);l=w}}
+  if(l)out.push(l);
+  if(out.length>maxL){out.length=maxL;out[maxL-1]=d.cortar(out[maxL-1]+' …',size,bold,max)}
+  return out;
+}
+async function pdfDia(){
+  const act=[...S.dia].filter(a=>a.actividad).sort((a,b)=>(a.horaInicio||'99').localeCompare(b.horaInicio||'99'));
+  if(!act.length){toast('Aún no hay actividades en el día del evento');return}
+  const d=new PdfDoc(792,612);d.nueva();const T='Día del evento · minuto a minuto';encabezadoPdf(d,T);
+  const cols=[{x:48,w:20,t:''},{x:72,w:74,t:'Hora'},{x:150,w:170,t:'Actividad'},{x:324,w:100,t:'Ubicación'},{x:428,w:78,t:'Responsable'},{x:510,w:110,t:'Contacto'},{x:624,w:120,t:'Notas / plan B'}];
+  let y=100;
+  const cab=()=>{d.rect(48,y-11,696,17,{fill:0.94,gris:0.94});cols.forEach(c=>d.texto(c.x+(c.t?0:0),y+1,c.t,{size:8.5,bold:true,gris:0.2}));y+=16};
+  cab();
+  act.forEach(a=>{
+    const hora=a.horaInicio?a.horaInicio+(a.horaFin?' – '+a.horaFin:''):'sin hora';
+    const cel=[envolverPdf(d,a.actividad,10,cols[2].w,3,true),envolverPdf(d,a.ubicacion||'',9,cols[3].w),envolverPdf(d,a.responsable||'',9,cols[4].w),envolverPdf(d,[a.contacto,a.telefono].filter(Boolean).join(' · '),9,cols[5].w),envolverPdf(d,a.notas||'',8.5,cols[6].w,4)];
+    const n=Math.max(1,...cel.map(c=>c.length)),h=n*11.5+8;
+    if(y+h>d.h-48){d.nueva();encabezadoPdf(d,T);y=100;cab()}
+    d.rect(49,y-8,9,9,{lw:0.8,gris:0.4});
+    if(a.estado==='Completada'){d.linea(50,y-3,53,y,{w:1,gris:0.2});d.linea(53,y,57,y-7,{w:1,gris:0.2})}
+    d.texto(cols[1].x,y,hora,{size:10,bold:!!a.horaInicio,max:cols[1].w,gris:a.horaInicio?0:0.5});
+    cel.forEach((lines,k)=>lines.forEach((ln,j)=>d.texto(cols[k+2].x,y+j*11.5,ln,{size:k===0?10:k===4?8.5:9,bold:k===0,gris:k===0?0:k===4?0.3:0.15})));
+    y+=h;d.linea(48,y-6,744,y-6,{gris:0.9});
+  });
+  pieDePaginas(d);await guardarPdf(d,'dia-del-evento');
+}
 async function pdfCeremonia(){
   const C=S.ceremonia,orden=[...S.liturgia].sort((a,b)=>num(a.orden)-num(b.orden));
   if(!orden.length&&!S.participantes.length){toast('Aún no hay guion ni participantes');return}
@@ -2687,9 +2732,9 @@ function rsvpStats(L){
   o.resp=o.invTot?Math.round((o.siInv+o.noInv)/o.invTot*100):0;
   return o;
 }
-/* Lista de Invitados: una fila por invitación pendiente o que no asiste, y una fila por persona que confirmó.
+/* Lista de Invitados: una fila por cada pase asignado (pendientes y los que no asisten) y una fila por cada persona que confirmó.
    Compara el Sheet con los invitados de la app que vienen de él (rsvpKey). Solo agrega o quita filas SIN mesa; a quien ya tiene mesa no lo borra. */
-function rsvpObjetivo(x){return x.estado==='si'?{n:Math.max(1,x.asistiran),r:'Confirmado'}:x.estado==='no'?{n:1,r:'Declinado'}:{n:1,r:'Pendiente'}}
+function rsvpObjetivo(x){const p=Math.max(1,x.pases||0);return x.estado==='si'?{n:Math.max(1,x.asistiran),r:'Confirmado'}:x.estado==='no'?{n:p,r:'Declinado'}:{n:p,r:'Pendiente'}}
 function rsvpFechaRsvp(x,r){return r==='Pendiente'||!x.fecha?'':fechaLocalISO(x.fecha)}
 function rsvpPlan(){
   const L=RS().lista,pl={agregar:[],quitar:[],excede:[],cambiar:[],huerfanas:[]};
@@ -2715,7 +2760,7 @@ function rsvpPlan(){
   return pl;
 }
 function rsvpFila(x,key,seq,r){
-  return{id:nextId(S.invitados,'I'),hogar:x.nombre,nombreInv:x.nombre,nombre:seq===1?x.nombre:`${x.nombre} – acompañante ${seq}`,invitadoDe:'Ambos',grupo:'',edad:'Adulto',alcohol:'',telefono:RS().tel[key]||'',correo:'',invitacionEnviada:true,rsvp:r,fechaRsvp:rsvpFechaRsvp(x,r),menu:'Sin definir',alergias:'',transporte:false,hospedaje:false,mesa:'',asiento:'',regalo:false,agradecimiento:false,notas:r==='Pendiente'?`${x.pases} ${x.pases===1?'pase asignado':'pases asignados'}`:'',rsvpKey:key,rsvpSeq:seq};
+  return{id:nextId(S.invitados,'I'),hogar:x.nombre,nombreInv:x.nombre,nombre:seq===1?x.nombre:`${x.nombre} – acompañante ${seq}`,invitadoDe:'Ambos',grupo:'',edad:'Adulto',alcohol:'',telefono:RS().tel[key]||'',correo:'',invitacionEnviada:true,rsvp:r,fechaRsvp:rsvpFechaRsvp(x,r),menu:menuNuevo(),alergias:'',transporte:false,hospedaje:false,mesa:'',asiento:'',regalo:false,agradecimiento:false,notas:r==='Pendiente'?`${x.pases} ${x.pases===1?'pase asignado':'pases asignados'}`:'',rsvpKey:key,rsvpSeq:seq};
 }
 function rsvpAplicar(quitarMan){
   let man=0;
@@ -2775,7 +2820,7 @@ VIEWS.confirmaciones=()=>{
       <details class="card"><summary style="cursor:pointer;font-weight:600">Confirmados (${conf.length} invitaciones · ${st.siPases} personas)</summary><div class="alerts" style="margin-top:8px">${conf.map(x=>filaSimple(x,'si')).join('')}</div></details>
       <details class="card"><summary style="cursor:pointer;font-weight:600">No asistirán (${nos.length} invitaciones · ${st.noPases} pases)</summary><div class="alerts" style="margin-top:8px">${nos.map(x=>filaSimple(x,'no')).join('')||'<p class="help">Ninguno.</p>'}</div></details></div>
     <div class="card" style="margin-top:14px"><h3>Lista de Invitados de la app</h3>
-      <p class="help" style="margin-top:6px">Pasa tus nombres reales del Sheet a <b>Invitados</b>: una fila por cada invitación pendiente o que no asistirá, y un lugar por cada persona que confirmó (si tenías 6 pases y vienen 4, se crean 4). Cuando un pendiente confirme, su fila se convierte en sus lugares. Es incremental: no duplica, no mueve a quien ya tiene mesa y nunca borra a alguien sentado.</p>
+      <p class="help" style="margin-top:6px">Pasa tus nombres reales del Sheet a <b>Invitados</b>: un lugar por cada pase asignado mientras la invitación está pendiente o no asistirá (2 pases = 2 filas), y por cada persona que confirmó (si tenías 6 pases y vienen 4, quedan 4). Cuando un pendiente confirme, sus filas se ajustan a las personas que vienen. Es incremental: no duplica, no mueve a quien ya tiene mesa y nunca borra a alguien sentado.</p>
       ${manuales?`<label class="medida" style="display:flex;gap:8px;align-items:flex-start;margin-top:8px"><input type="checkbox" id="rQuitarMan" ${quitarChk?'checked':''}> <span>Quitar antes los <b>${manuales}</b> invitados que no vienen del Sheet (ejemplo o capturados a mano)</span></label>`:''}
       <div class="toolbar" style="margin-top:10px"><span>${cambios||pl.excede.length?esc((t=>t.charAt(0).toUpperCase()+t.slice(1))(rsvpResumenPlan(pl).join('; ')+'.')):'<b>Todo al día ✓</b> La lista de Invitados coincide con tu Sheet.'}</span><span class="spacer"></span><button class="btn primary" id="rAplicar" ${cambios||(manuales&&quitarChk)?'':'disabled'}>Actualizar lista de Invitados</button></div>
       ${pl.huerfanas.length?`<p class="help" style="color:var(--coral)">${pl.huerfanas.length} registros vienen de invitaciones que ya no aparecen en el Sheet (¿cambió el nombre?). No se borran.</p>`:''}
@@ -2950,7 +2995,7 @@ VIEWS.mesas = ()=>{
   const invOpts=S.invitados.filter(i=>i.nombre).map(i=>({v:i.id,l:i.nombre}));
   const colsR=[{key:'id',label:'ID',type:'id'},{key:'a',label:'Invitado',type:'select',options:invOpts,allowEmpty:true},{key:'tipo',label:'Regla',type:'select',options:['Juntos','Separados']},{key:'b',label:'Con el invitado',type:'select',options:invOpts,allowEmpty:true},{key:'nota',label:'Nota',type:'text',w:'wide'},{key:'control',label:'Estado',calc:true,type:'pill'}];
   const filasMenu=S.mesas.filter(m=>m.nombre).map(m=>{const g=calcMesa(m).lista;return{m,g,mm:resumenMenus(g)}}).filter(x=>x.g.length);
-  const menuHTML=filasMenu.length?`<div class="tablewrap"><table class="data"><thead><tr><th>Mesa</th><th>Personas</th>${LISTAS.menu.map(k=>`<th>${esc(k)}</th>`).join('')}<th>Alergias</th></tr></thead><tbody>${filasMenu.map(({m,g,mm})=>`<tr><td>${esc(m.nombre)}</td><td class="num">${g.length}</td>${LISTAS.menu.map(k=>`<td class="num">${mm[k]||''}</td>`).join('')}<td style="white-space:normal;min-width:220px">${esc(g.filter(i=>i.alergias).map(i=>`${i.nombre}: ${i.alergias}`).join(' · '))}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Aún no hay invitados sentados.</div>';
+  const menuHTML=filasMenu.length?`<div class="tablewrap"><table class="data"><thead><tr><th>Mesa</th><th>Personas</th>${menusTabla(filasMenu).map(k=>`<th>${esc(k)}</th>`).join('')}<th>Alergias</th></tr></thead><tbody>${filasMenu.map(({m,g,mm})=>`<tr><td>${esc(m.nombre)}</td><td class="num">${g.length}</td>${menusTabla(filasMenu).map(k=>`<td class="num">${mm[k]||''}</td>`).join('')}<td style="white-space:normal;min-width:220px">${esc(g.filter(i=>i.alergias).map(i=>`${i.nombre}: ${i.alergias}`).join(' · '))}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Aún no hay invitados sentados.</div>';
   const sel=S.ui.sel||{}, nSel=S.ui.multi.length;
   const cf=conflictosPlano(S);
   const mesasC=S.mesas.map(m=>({m,c:calcMesa(m)}));
@@ -3199,7 +3244,8 @@ VIEWS.dia = ()=>{
     </div>
     <div class="card" style="margin-top:14px"><h3>Vista por horas y responsable</h3><div style="margin-top:10px;overflow:auto">${ganttDia()}</div></div>
     <div style="margin:18px 0 12px" class="legendkey"><span><i class="e"></i>Editable</span><span><i class="a"></i>Automático</span></div>
-    <div data-list="dia"><div class="toolbar"><span class="spacer"></span><button class="btn danger" id="clear">Vaciar tabla</button><button class="btn primary" id="add">+ Agregar actividad</button></div>${tableHTML(rows,cols,{del:true})}</div>`;
+    <div data-list="dia"><div class="toolbar"><span class="spacer"></span><button class="btn" id="diaPdf">Imprimir minuto a minuto (PDF)</button><button class="btn danger" id="clear">Vaciar tabla</button><button class="btn primary" id="add">+ Agregar actividad</button></div>${tableHTML(rows,cols,{del:true})}</div>`;
+  $('#diaPdf').onclick=pdfDia;
   $('#clear').onclick=()=>vaciarLista('dia');
   $('#add').onclick=()=>{S.dia.push({id:nextId(S.dia,'A'),horaInicio:'',horaFin:'',actividad:'',ubicacion:'',responsable:'Ambos',proveedorId:'',estado:'No iniciada',contacto:'',telefono:'',notas:''});save();pendingFocus={id:S.dia[S.dia.length-1].id,key:'actividad'};render()};
 };
